@@ -1,0 +1,54 @@
+{
+  "Comment": "Schedule a schedule and update the state in DynamoDB",
+  "StartAt": "Schedule a schedule",
+  "States": {
+    "Schedule a schedule": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ScheduleCreatorFunctionName}",
+        "Payload.$": "States.ArrayGetItem($, 0)"
+      },
+      "ResultSelector": {
+        "pk.$": "$.Payload.pk",
+        "status.$": "$.Payload.status"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 6,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Update schedule state"
+    },
+    "Update schedule state": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "${SchedulesTable}",
+        "Key": {
+          "pk": {
+            "S.$": "$.pk"
+          }
+        },
+        "UpdateExpression": "SET #status = :status",
+        "ExpressionAttributeValues": {
+          ":status": {
+            "S.$": "$.status"
+          }
+        },
+        "ExpressionAttributeNames": {
+          "#status": "status"
+        }
+      },
+      "End": true
+    }
+  }
+}

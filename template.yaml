@@ -1,0 +1,331 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: A reminders app. Learning about EventBridge Scheduler and Pipes.
+
+Globals:
+  Function:
+    Timeout: 10
+    Tracing: Active
+  Api:
+    TracingEnabled: True
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+  SchedulesDeliveryEndpointEmail:
+    Type: String
+    Default: foo.bar@gmail.com
+
+Resources:
+  RemindersAPIRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+      Policies:
+        - PolicyName: AllowDynamoDBWrite
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !Sub ${SchedulesTable.Arn}
+
+  RemindersAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: RemindersAPI
+
+  ScheduleModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      Name: CreateScheduleModel
+      ContentType: application/json
+      RestApiId: !Sub ${RemindersAPI}
+      Schema:
+        {
+          "$schema": "http://json-schema.org/draft-04/schema#",
+          "title": "CreateScheduleModel",
+          "type": "object",
+          "required": ["name", "date"],
+          "properties":
+            {
+              "name": { "type": "string", "pattern": "^[0-9a-zA-Z-_.]+$" },
+              "date": { "type": "string" },
+              "description": { "type": "string" }
+            }
+        }
+
+  SchedulesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Sub ${RemindersAPI}
+      ParentId: !Sub ${RemindersAPI.RootResourceId}
+      PathPart: schedules
+
+  SchedulesResourceValidator:
+    Type: AWS::ApiGateway::RequestValidator
+    Properties:
+      Name: SchedulePayloadValidator
+      RestApiId: !Sub ${RemindersAPI}
+      ValidateRequestBody: true
+      ValidateRequestParameters: false
+
+  SchedulesResourcePOST:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Sub ${RemindersAPI}
+      ResourceId: !Sub ${SchedulesResource}
+      RequestModels:
+        $default: !Sub ${ScheduleModel}
+      RequestValidatorId: !Sub ${SchedulesResourceValidator.RequestValidatorId}
+      HttpMethod: POST
+      ApiKeyRequired: false
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        Credentials: !Sub ${RemindersAPIRole.Arn}
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          application/json: !Sub >
+            {
+              "TableName": "${SchedulesTable}",
+              "Item": { "pk": { "S": "$input.path('name')"}, "date": {"S": "$input.path('date')"}, "status": {"S": "CREATED"} },
+              "ConditionExpression": "attribute_not_exists(#pk)",
+              "ExpressionAttributeNames": {
+                "#pk": "pk"
+              },
+              "ReturnValues": "NONE"
+            }
+        IntegrationResponses:
+          - StatusCode: "200"
+            SelectionPattern: 2\d{2}
+            ResponseTemplates:
+              application/json: >
+                #set($context.responseOverride.status = 202)
+                $input.json("$")
+          - StatusCode: "400"
+            SelectionPattern: 4\d{2}
+            ResponseTemplates:
+              application/json: >
+                #set($errorMessage = $input.path("message"))
+                #if($errorMessage.contains("The conditional request failed"))
+                  {"message": "The schedule already exists"}
+                #else
+                  {"message": "Unknown error", "serviceMessage": "$errorMessage"}
+                #end
+          - StatusCode: "500"
+            SelectionPattern: 5\d{2}
+            ResponseTemplates:
+              application/json: >
+                #set($errorMessage = $input.path("message"))
+                  {"message": "Internal Server Error", "serviceMessage": "$errorMessage"}
+      MethodResponses:
+        - StatusCode: "200"
+        - StatusCode: "400"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - SchedulesResourcePOST
+    Properties:
+      RestApiId: !Sub ${RemindersAPI}
+      StageName: !Sub ${Stage}
+
+  SchedulesTable:
+    Type: AWS::DynamoDB::GlobalTable
+    DeletionPolicy: Delete
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Replicas:
+        - Region: !Sub ${AWS::Region}
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+
+  SchedulesEnrichmentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: target/lambda/enrich-function/
+      Handler: bootstrap
+      Runtime: provided.al2
+      Architectures:
+        - arm64
+
+  ScheduleTriggerTopic:
+    Type: AWS::SNS::Topic
+    Properties: {}
+
+  ScheduleTriggerTopicEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Sub ${SchedulesDeliveryEndpointEmail}
+      Protocol: email
+      TopicArn: !Sub ${ScheduleTriggerTopic}
+
+  ScheduleTriggerDLQ:
+    Type: AWS::SQS::Queue
+    Properties: {}
+
+  SchedulerTriggerTopicRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: !Sub scheduler.${AWS::Region}.amazonaws.com
+      Policies:
+        - PolicyName: AllowSchedulerSNSSendMessage
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Sub ${ScheduleTriggerTopic}
+        - PolicyName: AllowDLQSendMessage
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !Sub ${ScheduleTriggerDLQ.Arn}
+
+  ScheduleCreatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: target/lambda/schedule-creator-function/
+      Handler: bootstrap
+      Runtime: provided.al2
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          SCHEDULER_TARGET_ARN: !Sub ${ScheduleTriggerTopic}
+          SCHEDULER_ROLE_ARN: !Sub ${SchedulerTriggerTopicRole.Arn}
+          SCHEDULER_DLQ_ARN: !Sub ${ScheduleTriggerDLQ.Arn}
+      Policies:
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: scheduler:CreateSchedule
+              Resource: !Sub arn:aws:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/*
+        - Version: 2012-10-17
+          Statement:
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource: !Sub ${SchedulerTriggerTopicRole.Arn}
+
+  SchedulesTargetMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: !Sub states.${AWS::Region}.amazonaws.com
+      Policies:
+        - PolicyName: AllowSchedulerLambdaInvoke
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub ${ScheduleCreatorFunction.Arn}
+        - PolicyName: AllowScheduleStatusUpdate
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !Sub ${SchedulesTable.Arn}
+
+  SchedulesTargetMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: ./workflow.asl.json
+      DefinitionSubstitutions:
+        ScheduleCreatorFunctionName: !Sub ${ScheduleCreatorFunction}
+        SchedulesTable: !Sub ${SchedulesTable}
+      Role: !Sub ${SchedulesTargetMachineRole.Arn}
+      Tracing:
+        Enabled: true
+
+  SchedulesPipeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pipes.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SourcePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource: !Sub ${SchedulesTable.StreamArn}
+        - PolicyName: EnrichmentPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub ${SchedulesEnrichmentFunction.Arn}
+        - PolicyName: TargetPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Sub ${SchedulesTargetMachine.Arn}
+
+  SchedulesPipe:
+    Type: AWS::Pipes::Pipe
+    Properties:
+      Name: SchedulesPipe
+      RoleArn: !Sub ${SchedulesPipeRole.Arn}
+      Source: !Sub ${SchedulesTable.StreamArn}
+      SourceParameters:
+        DynamoDBStreamParameters:
+          StartingPosition: LATEST
+          BatchSize: 1
+          MaximumRetryAttempts: 0
+      Enrichment: !Sub ${SchedulesEnrichmentFunction.Arn}
+      Target: !Sub ${SchedulesTargetMachine.Arn}
+      TargetParameters:
+        StepFunctionStateMachineParameters:
+          InvocationType: FIRE_AND_FORGET
+
+Outputs:
+  RemindersAPIUrl:
+    Value: !Sub "https://${RemindersAPI}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Stage}/schedules"
