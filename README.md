@@ -48,7 +48,7 @@
 
   - I've tried to use the APIGW event type (via the `lambda_http` crate) to parse incoming CloudWatch Pipes events. This resulted in runtime errors.
 
-- It is quite neat that you can use `Value` from the `serde_json` package to denote any valid json value.
+- It is neat that you can use `Value` from the `serde_json` package to denote any valid json value.
 
 - It **took me much longer than I would like to admit to get the DDB stream handler enricher working**.
 
@@ -74,9 +74,9 @@
 
 - The lambda responsible for creating the schedule had to have the **`iam:PassRole` permission**.
 
-  - This makes sense as the lambda literally passes the _RoleArn_ into the payload, which the scheduler assumes.
+  - This makes sense as the lambda passes the _RoleArn_ into the payload, which the scheduler assumes.
 
-  - **In this particular context, the `iam:PassRole` refers to the fact that the _scheduler_ will assume the `RoleArn` for the identity called when `createSchedule`**. Since I'm creating the schedule in AWS Lambda, it is the AWS Lambda execution role that needs to allow for that.
+  - **In this context, the `iam:PassRole` refers to the fact that the _scheduler_ will assume the `RoleArn` for the identity called when `createSchedule`**. Since I'm creating the schedule in AWS Lambda, it is the AWS Lambda execution role that needs to allow for that.
 
   - Note that the `iam:PassRole` is not related to _service roles__. These are "pre-canned" roles needed for a given service to operate. There are no "dynamic" elements associated with that role.
 

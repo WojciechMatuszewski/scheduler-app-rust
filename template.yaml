@@ -321,7 +321,7 @@ Resources:
       Name: SchedulesPipe
       RoleArn: !Sub ${SchedulesPipeRole.Arn}
       Source: !Sub ${SchedulesTable.StreamArn}
-      SourceParameters:
+      SourceParametgpers:
         DynamoDBStreamParameters:
           StartingPosition: LATEST
           BatchSize: 1
