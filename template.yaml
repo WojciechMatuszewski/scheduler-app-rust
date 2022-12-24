@@ -37,6 +37,8 @@ Resources:
                 Action: dynamodb:PutItem
                 Resource: !Sub ${SchedulesTable.Arn}
 
+  # You will need to manually create deployments for this API
+  # The "native" CFN resource does not implement the "auto-deploy" feature.
   RemindersAPI:
     Type: AWS::ApiGateway::RestApi
     Properties:
