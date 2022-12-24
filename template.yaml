@@ -57,7 +57,11 @@ Resources:
           "properties":
             {
               "name": { "type": "string", "pattern": "^[0-9a-zA-Z-_.]+$" },
-              "date": { "type": "string" },
+              "date": {
+                  "type": "string",
+                  # yyyy-mm-ddThh:mm:ss
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$"
+                },
               "description": { "type": "string" }
             }
         }

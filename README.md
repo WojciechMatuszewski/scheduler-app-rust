@@ -82,12 +82,10 @@
 
 - Is there not an easy way to delete the AWS Scheduler one-time schedules?
 
-  - **That indeed seems to be the case**. They are "looking to make it better". [Source](https://www.reddit.com/r/aws/comments/yxqna2/eventbridge_scheduler_auto_delete_scheduled_events/)
+  - **That indeed seems to be the case**. AWS is "looking to make it better". [Source](https://www.reddit.com/r/aws/comments/yxqna2/eventbridge_scheduler_auto_delete_scheduled_events/).
 
-  - IDEA: use SNS delivery status? I would have to use the SNS attributes to denote the schedule name
+  - My **initial idea was to use the SNS delivery status messages**. The plan was to get the schedule name from the message attributes and delete the schedule.
 
-  - I would need to use the [universal target syntax](https://docs.aws.amazon.com/scheduler/latest/UserGuide/managing-targets-universal.html)
+    - Sadly **the SNS delivery status messages are NOT supported in CFN. They CAN NOT contain the message attributes**. This makes them a bit useless for my use case.
 
-    - Bruh, not supported in CFN.
-
-    - And it does not seem like they can carry the message attributes? [Link](https://stackoverflow.com/a/71245307).
+    - The **EventBridge Scheduler _describe_ API calls do not return any information if the target invocation was successful**. This is yet another factor that makes it challenging to create a holistic view of the state of the schedules.
